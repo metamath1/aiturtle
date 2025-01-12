@@ -1,16 +1,13 @@
-import os
+import os, json
 import turtle
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import typing_extensions as typing
 
 from openai import OpenAI
 import google.generativeai as genai
 
 load_dotenv()
-
-chatgpt = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini = genai.GenerativeModel("gemini-1.5-pro")
 
 system_prompt = f"""
         SYSTEM MESSAGE
@@ -31,30 +28,44 @@ system_prompt = f"""
             turtle.forward(10); turtle.right(90); 
             turtle.forward(10); turtle.right(90); 
             turtle.forward(10); turtle.right(90);
-        7. 응답은 항상 start_position, end_position, code, aux_response를 포함합니다.
-        8. start_position: 도형을 그리기 시작하는 위치
-           end_position: 도형을 그린 후 위치
-           code: 도형을 그리는 파이썬 코드
+        7. 응답은 항상 code, aux_response를 포함합니다.
+        8. code: 도형을 그리는 파이썬 코드
            aux_response: 사용자의 요구가 파이썬 코드를 사용하는 것이 아닐 경우에 대한 응답
-        9. [IMPORTANT!] end_position을 다음 도형을 그리는 시작 위치로 설정할 것!!
-           따라서 다음 도형에 대한 start_position은 이전 도형의 end_position이 되야 함!!
+        9. aux_response에 응답할 항목이 없으면 빈문자열을 출력합니다.
         10. 8항에서 명시한것처럼 터틀 조정에 대한 요청이 아닐 경우 aux_response에 충실히 질문에 대답해야 합니다.
         11. 복잡한 도형 요청이 오면 가능한 도형을 부분으로 분할하고 분할된 부분을 그리는 함수를 만든후
-           그 함수들을 호출하여 전체 도형을 완성하시오.
+            그 함수들을 호출하여 전체 도형을 완성하시오.
         """
+
+chatgpt = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 GPT_MESSAGES = [
     {
         "role": "system", 
         "content": system_prompt
     },
 ]
-GEMINI_MESSAGES = []
 
-class TurtleResponse(BaseModel):
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_MESSAGES = [
+    {
+        "role": "user", 
+        "parts": system_prompt
+    },
+]
+chat_gemini = genai.GenerativeModel("gemini-1.5-flash").start_chat(
+    history=GEMINI_MESSAGES
+)
+
+class TurtleResponseChatGpt(BaseModel):
+    code: str # 도형을 그리는 파이썬 코드
+    aux_response: str # 도형을 그리는 질문에 대한 응답이 아닌 일반적인 답변 
+
+class TurtleResponseGemini(typing.TypedDict):
     code: str # 도형을 그리는 파이썬 코드
     aux_response: str # 도형을 그리는 질문에 대한 응답이 아닌 일반적인 답변 
 
 def invoke(model, user_input, cur_pos):
+    print(type(model))
     if isinstance(model, OpenAI):
         # Update the system message with current start position
         GPT_MESSAGES.append(
@@ -66,7 +77,7 @@ def invoke(model, user_input, cur_pos):
         completion = model.beta.chat.completions.parse(
             model="gpt-4o-2024-08-06",
             messages=GPT_MESSAGES,
-            response_format=TurtleResponse
+            response_format=TurtleResponseChatGpt
         )
 
         response = completion.choices[0].message.parsed
@@ -80,23 +91,20 @@ def invoke(model, user_input, cur_pos):
         code = response.code
         code = code.replace("python", "").replace("```", "")
         aux_response = response.aux_response
-        
-    # 현재 필요없음
-    # elif isinstance(model, genai.GenerativeModel):
-    #     prompt = f"""
-    #     SYSTEM MESSAGE
-    #     {system_prompt}
-
-    #     USER INPUT
-    #     {user_input}
-    #     """
-    #     response = model.generate_content(
-    #         prompt, 
-    #         generation_config = genai.GenerationConfig(
-    #             temperature=0.0
-    #         )
-    #     )
-    #     code = response.text
+    
+    # elif isinstance(model, google.generativeai.generative_models.ChatSession):
+    else:
+        response = model.send_message(
+            f"{user_input} (현재 위치: {cur_pos})", 
+            generation_config = genai.GenerationConfig(
+                response_mime_type="application/json", 
+                response_schema=TurtleResponseGemini,
+            )
+        )
+        print(model.history[-2:])
+        response = json.loads(response.text)
+        code = response['code']
+        aux_response = response['aux_response']
     
     return code, aux_response
 
@@ -114,10 +122,7 @@ while True:
         user_input = input("무엇을 그리고 싶나요? (종료: exit 입력) >>> ")
 
     if user_input != "exit":
-        code, aux_response = invoke(chatgpt, user_input, cur_pos)
-
-        # Update the start position for the next shape
-        # current_start_position = new_end_position
+        code, aux_response = invoke(chat_gemini, user_input, cur_pos)
 
         # 터틀 그래픽 설정
         # turtle.speed(50)  # 속도 설정 (0이 가장 빠름)
@@ -126,8 +131,7 @@ while True:
             flag = False
 
             # 현재위치 설정
-            code, aux_response = invoke(chatgpt, "터틀의 현재 위치를 `cur_pos`에 대입하는 코드", cur_pos)
-            exec(code)
+            cur_pos = turtle.pos()
             print("현재위치: ", cur_pos)
             
         except Exception as e:
