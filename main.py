@@ -44,28 +44,24 @@ GPT_MESSAGES = [
         "content": system_prompt
     },
 ]
-
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MESSAGES = [
-    {
-        "role": "user", 
-        "parts": system_prompt
-    },
-]
-chat_gemini = genai.GenerativeModel("gemini-1.5-flash").start_chat(
-    history=GEMINI_MESSAGES
-)
-
 class TurtleResponseChatGpt(BaseModel):
     code: str # 도형을 그리는 파이썬 코드
     aux_response: str # 도형을 그리는 질문에 대한 응답이 아닌 일반적인 답변 
 
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_MESSAGES = []
+# chat_gemini = genai.GenerativeModel("gemini-1.5-flash").start_chat(
+#     history=GEMINI_MESSAGES
+# )
+gemini = genai.GenerativeModel("gemini-1.5-flash",
+                      system_instruction=system_prompt)
 class TurtleResponseGemini(typing.TypedDict):
     code: str # 도형을 그리는 파이썬 코드
     aux_response: str # 도형을 그리는 질문에 대한 응답이 아닌 일반적인 답변 
 
+
 def invoke(model, user_input, cur_pos):
-    print(type(model))
     if isinstance(model, OpenAI):
         # Update the system message with current start position
         GPT_MESSAGES.append(
@@ -94,14 +90,26 @@ def invoke(model, user_input, cur_pos):
     
     # elif isinstance(model, google.generativeai.generative_models.ChatSession):
     else:
-        response = model.send_message(
-            f"{user_input} (현재 위치: {cur_pos})", 
+        GEMINI_MESSAGES.append(
+            {
+                "role": "user",
+                "parts": f"{user_input} (현재 위치: {cur_pos})"
+            }
+        )
+        response = model.generate_content(
+            GEMINI_MESSAGES,
             generation_config = genai.GenerationConfig(
                 response_mime_type="application/json", 
                 response_schema=TurtleResponseGemini,
             )
         )
-        print(model.history[-2:])
+        GEMINI_MESSAGES.append(
+            {
+                "role": "model",
+                "parts": response.text
+            }
+        )
+        print(GEMINI_MESSAGES[-2:])
         response = json.loads(response.text)
         code = response['code']
         aux_response = response['aux_response']
@@ -122,7 +130,7 @@ while True:
         user_input = input("무엇을 그리고 싶나요? (종료: exit 입력) >>> ")
 
     if user_input != "exit":
-        code, aux_response = invoke(chat_gemini, user_input, cur_pos)
+        code, aux_response = invoke(gemini, user_input, cur_pos)
 
         # 터틀 그래픽 설정
         # turtle.speed(50)  # 속도 설정 (0이 가장 빠름)
